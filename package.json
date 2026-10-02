@@ -1,0 +1,23 @@
+{
+  "name": "entre-nos-financas",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --watch --env-file-if-exists=.env server.mjs",
+    "predev:local": "node scripts/prepare-local-data.mjs",
+    "dev:local": "pglite-server --db=./data/entre-nos --port=5432 --host=127.0.0.1 --extensions=pgcrypto --max-connections=1 --run=\"node --env-file-if-exists=.env server.mjs\" --include-database-url"
+  },
+  "dependencies": {
+    "google-auth-library": "^11.1.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11"
+  }
+}

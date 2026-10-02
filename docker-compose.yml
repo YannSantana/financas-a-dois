@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: entre_nos
+      POSTGRES_USER: entre_nos
+      POSTGRES_PASSWORD: entre-nos-local
+    ports:
+      - "5432:5432"
+    volumes:
+      - entre_nos_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U entre_nos -d entre_nos"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  entre_nos_db:
