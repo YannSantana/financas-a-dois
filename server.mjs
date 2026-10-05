@@ -19,8 +19,10 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID || undefined);
 const pool = process.env.DATABASE_URL ? new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: /sslmode=require/i.test(process.env.DATABASE_URL) ? { rejectUnauthorized: true } : undefined,
-  max: Number(process.env.PG_POOL_MAX || 8),
-  connectionTimeoutMillis: 5000,
+  // O servidor PGlite local usa uma conexão; manter o pool alinhado evita
+  // timeouts quando a tela faz várias chamadas ao mesmo tempo.
+  max: Number(process.env.PG_POOL_MAX || 1),
+  connectionTimeoutMillis: 15000,
   statement_timeout: 15000,
   idleTimeoutMillis: 30_000
 }) : null;
@@ -157,10 +159,18 @@ async function signInWithGoogle(req, res) {
     await client.query('DELETE FROM sessions WHERE user_id=$1 AND expires_at<NOW()', [user.id]);
     await client.query('INSERT INTO sessions (token_hash,user_id,expires_at) VALUES ($1,$2,NOW()+($3 || \' days\')::interval)', [sha256(token), user.id, String(SESSION_DAYS)]);
     await client.query('COMMIT');
+    // Reutiliza a conexão da transação para concluir o login. Isso evita
+    // um segundo checkout do pool no modo PGlite local, que aceita uma conexão.
+    const { rows: coupleRows } = await client.query(`
+      SELECT c.id, c.name, s.plan, s.status,
+             (SELECT COUNT(*)::int FROM couple_members cm2 WHERE cm2.couple_id=c.id) AS member_count
+        FROM couple_members cm
+        JOIN couples c ON c.id=cm.couple_id
+        JOIN subscriptions s ON s.couple_id=c.id
+       WHERE cm.user_id=$1 LIMIT 1`, [user.id]);
+    const { rows: profileRows } = await client.query('SELECT * FROM profiles WHERE user_id=$1', [user.id]);
     setSessionCookie(res, token);
-    const couple = await getCouple(user.id);
-    const { rows: profileRows } = await pool.query('SELECT * FROM profiles WHERE user_id=$1', [user.id]);
-    return { user, profile: profileRows[0], couple };
+    return { user, profile: profileRows[0], couple: coupleRows[0] || null };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     if (error.code === '23505') throw fail(409, 'Este e-mail já está associado a outro cadastro.');

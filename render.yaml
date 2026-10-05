@@ -30,6 +30,7 @@ services:
         sync: false
       - key: WHATSAPP_GRAPH_API_VERSION
         sync: false
+
 databases:
   - name: entre-nos-db
     plan: free

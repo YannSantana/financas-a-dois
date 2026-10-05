@@ -45,6 +45,18 @@ Requisitos: Node.js 22 ou mais recente. Para usar o PostgreSQL local completo, i
 
 Na primeira inicialização, o servidor aplica `schema.sql` e cria as tabelas do produto. `GET /api/health` indica se o PostgreSQL está conectado.
 
+## Preparar o lançamento online
+
+O arquivo `render.yaml` deixa o serviço web e o PostgreSQL prontos para uma implantação no Render. O plano gratuito serve para testes e protótipos; o serviço pode ficar suspenso após períodos sem acesso e os limites da plataforma se aplicam.
+
+1. Crie uma conta no Render e escolha **New → Blueprint**.
+2. Conecte o repositório público `YannSantana/financas-a-dois` e selecione `render.yaml`.
+3. Preencha as variáveis marcadas como secretas: `PUBLIC_APP_ORIGIN` (a URL HTTPS do serviço), `GOOGLE_CLIENT_ID` e, quando for ativar o WhatsApp, as seis variáveis `WHATSAPP_*`.
+4. No Google Cloud, adicione a URL HTTPS do serviço em **Origens JavaScript autorizadas** e inclua também a origem no Client ID Web.
+5. Depois do primeiro deploy, confirme `https://seu-dominio/api/health` antes de abrir o site.
+
+O `DATABASE_URL` é criado automaticamente pelo Blueprint e os segredos não entram no GitHub. O seu computador não precisa ficar ligado depois que o serviço estiver implantado.
+
 ### Atalho local sem Docker
 
 As dependências do projeto incluem PGlite Socket, que mantém um banco PostgreSQL compatível em `data/entre-nos`. Para iniciar o banco e o site juntos, rode `npm run dev:local` e abra `http://localhost:3000`. O banco persiste nesse diretório entre inicializações. Esse modo é para desenvolvimento local; para produção, use um serviço PostgreSQL convencional e `npm start`.
