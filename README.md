@@ -2,9 +2,20 @@
 
 Aplicação local para finanças de casal, com página de apresentação, cadastro Google, perfil inicial, lançamentos, metas e integração preparada para a WhatsApp Business Cloud API.
 
+## Estado desta versão
+
+Projeto em desenvolvimento. O repositório público contém o código; não há hospedagem pública ativada.
+
+- Banco local: disponível com `npm run dev:local` ou `INICIAR.cmd` no Windows.
+- Login Google: a validação no servidor está implementada; requer um Client ID Web real da sua conta Google Cloud.
+- WhatsApp: requer as credenciais e o número empresarial da Meta, além de um servidor HTTPS para receber mensagens. O aplicativo não gera códigos de vínculo enquanto essa configuração estiver ausente.
+- E-mail, cobrança Premium e Open Finance: ainda não disponíveis. Não há autenticação por e-mail nem cobrança ativa nesta versão.
+
+Abra **http://localhost:3000** para usar o servidor e o banco. Abrir `index.html` diretamente permite apenas visualizar a apresentação e demonstração.
+
 ## Iniciar localmente
 
-Requisitos: Node.js 20.6 ou mais recente. Para usar o PostgreSQL local completo, instale Docker Desktop ou forneça outro PostgreSQL acessível.
+Requisitos: Node.js 22 ou mais recente. Para usar o PostgreSQL local completo, instale Docker Desktop ou forneça outro PostgreSQL acessível.
 
 1. Abra esta pasta no terminal e instale as dependências:
 
@@ -41,6 +52,14 @@ As dependências do projeto incluem PGlite Socket, que mantém um banco PostgreS
 ## Entrar com Google
 
 Crie um OAuth Client ID do tipo Web no Google Cloud Console. Adicione `http://localhost:3000` como origem JavaScript autorizada e, quando publicar o site, adicione também o domínio HTTPS de produção. Copie o Client ID para `GOOGLE_CLIENT_ID` no `.env` e reinicie o servidor.
+
+Configure a tela de consentimento no Google Auth Platform usando as informações reais do responsável pelo aplicativo. Para desenvolvimento, autorize `http://localhost` e `http://localhost:3000`; se usar `127.0.0.1`, cadastre essa origem também. O ID deve terminar em `.apps.googleusercontent.com`. Este fluxo usa somente o Client ID e não precisa de Client Secret no navegador. Consulte a [configuração oficial do Google](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
+
+`/api/config` informa a disponibilidade real do banco e das integrações, sem expor segredos. `/api/health` retorna 200 com o banco conectado e 503 quando indisponível. Um botão de login só é montado quando o banco está acessível, o Client ID está configurado e a biblioteca Google carrega.
+
+### Correções de 5 de outubro de 2026
+
+O servidor entrega somente a página e os arquivos públicos de `assets`; arquivos `.env`, banco, código do servidor e metadados Git ficam bloqueados. Datas inexistentes são rejeitadas. Metas arquivadas ou concluídas não recebem contribuições. Os totais por categoria incluem todos os lançamentos do mês, mesmo quando a lista exibe os 80 mais recentes. Sair da conta limpa a tela e revoga a sessão no servidor. O convite para outro espaço não pode apagar um espaço já compartilhado.
 
 O navegador envia o token de identidade Google ao servidor. O servidor valida emissor, público e validade do token com a biblioteca oficial `google-auth-library`, cria/atualiza o perfil e inicia uma sessão em cookie `HttpOnly`. Nenhum token de sessão é guardado no navegador.
 

@@ -18,8 +18,10 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID || undefined);
 const pool = process.env.DATABASE_URL ? new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: /sslmode=require/i.test(process.env.DATABASE_URL) ? { rejectUnauthorized: false } : undefined,
+  ssl: /sslmode=require/i.test(process.env.DATABASE_URL) ? { rejectUnauthorized: true } : undefined,
   max: Number(process.env.PG_POOL_MAX || 8),
+  connectionTimeoutMillis: 5000,
+  statement_timeout: 15000,
   idleTimeoutMillis: 30_000
 }) : null;
 
@@ -29,6 +31,16 @@ const sendJson = (res, status, value, extraHeaders = {}) => {
   res.end(JSON.stringify(value));
 };
 const fail = (status, message, code) => Object.assign(new Error(message), { status, code });
+let databaseReady = false;
+const googleConfigured = /^[\w.-]+\.apps\.googleusercontent\.com$/.test(GOOGLE_CLIENT_ID);
+const whatsappConfigured = ['WHATSAPP_VERIFY_TOKEN','WHATSAPP_APP_SECRET','WHATSAPP_ACCESS_TOKEN','WHATSAPP_PHONE_NUMBER_ID','WHATSAPP_BUSINESS_NUMBER','WHATSAPP_GRAPH_API_VERSION'].every(key => Boolean(process.env[key]));
+async function databaseAvailable() {
+  if (!pool || !databaseReady) return false;
+  try { await pool.query('SELECT 1'); return true; } catch { return false; }
+}
+function validDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value;
+}
 
 function setSessionCookie(res, token) {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
@@ -74,7 +86,7 @@ async function readJson(req) {
 }
 
 async function requireSession(req) {
-  if (!pool) throw fail(503, 'Banco de dados ainda não configurado.');
+  if (!pool || !databaseReady) throw fail(503, 'O banco de dados está indisponível. Tente novamente em instantes.', 'database_unavailable');
   const rawToken = cookieValue(req, COOKIE);
   if (!rawToken) throw fail(401, 'Entre com sua conta Google para continuar.', 'auth_required');
   const { rows } = await pool.query(`
@@ -119,11 +131,13 @@ function safeText(value, max = 160) {
 
 async function signInWithGoogle(req, res) {
   checkOrigin(req);
-  if (!GOOGLE_CLIENT_ID) throw fail(503, 'O login Google ainda precisa de um OAuth Client ID.');
-  if (!pool) throw fail(503, 'Configure DATABASE_URL antes de iniciar o login.');
+  if (!googleConfigured) throw fail(503, 'A entrada com Google ainda não foi ativada.', 'google_not_configured');
+  if (!await databaseAvailable()) throw fail(503, 'O banco de dados está indisponível. Tente novamente em instantes.', 'database_unavailable');
   const { credential } = await readJson(req);
   if (typeof credential !== 'string' || credential.length > 12_000) throw fail(400, 'Credencial Google inválida.');
-  const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
+  let ticket;
+  try { ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID }); }
+  catch { throw fail(401, 'A autorização do Google expirou ou é inválida. Entre novamente.', 'invalid_google_token'); }
   const payload = ticket.getPayload();
   if (!payload?.sub || !payload.email || payload.email_verified !== true) throw fail(401, 'Não foi possível validar esta conta Google.');
 
@@ -323,13 +337,16 @@ async function handleWhatsAppWebhook(req, res) {
 async function api(req, res, url) {
   const route = `${req.method} ${url.pathname}`;
   if (route === 'GET /api/config') return sendJson(res, 200, {
-    googleClientId: GOOGLE_CLIENT_ID,
+    googleClientId: googleConfigured ? GOOGLE_CLIENT_ID : '',
     whatsappBusinessNumber: process.env.WHATSAPP_BUSINESS_NUMBER || '',
-    databaseConfigured: Boolean(pool)
+    databaseConfigured: await databaseAvailable(),
+    googleConfigured,
+    whatsappConfigured,
+    paymentsConfigured: false,
+    openFinanceConfigured: false
   });
   if (route === 'GET /api/health') {
-    if (!pool) return sendJson(res, 503, { ok: false, database: 'not_configured' });
-    await pool.query('SELECT 1');
+    if (!await databaseAvailable()) return sendJson(res, 503, { ok: false, database: pool ? 'unavailable' : 'not_configured' });
     return sendJson(res, 200, { ok: true, database: 'connected' });
   }
   if (url.pathname === '/api/webhooks/whatsapp') return handleWhatsAppWebhook(req, res);
@@ -379,7 +396,7 @@ async function api(req, res, url) {
     const monthStart=/^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth)?`${requestedMonth}-01`:null;
     const range=`transaction_date>=COALESCE($3::date,date_trunc('month',CURRENT_DATE)::date)
       AND transaction_date<COALESCE(($3::date+INTERVAL '1 month')::date,(date_trunc('month',CURRENT_DATE)+INTERVAL '1 month')::date)`;
-    const [tx, goals, budgets, totals, daily] = await Promise.all([
+    const [tx, goals, budgets, totals, daily, categories] = await Promise.all([
       pool.query(`SELECT id,created_by,amount,direction,category,description,visibility,source,transaction_date,created_at
         FROM transactions WHERE couple_id=$1 AND deleted_at IS NULL AND ${range} AND (visibility='shared' OR created_by=$2)
         ORDER BY transaction_date DESC,created_at DESC LIMIT 80`, [couple.id,user.id,monthStart]),
@@ -395,9 +412,12 @@ async function api(req, res, url) {
         COALESCE(SUM(amount) FILTER (WHERE direction='income'),0) AS income,
         COALESCE(SUM(ABS(amount)) FILTER (WHERE direction='expense'),0) AS expenses
         FROM transactions WHERE couple_id=$1 AND deleted_at IS NULL AND ${range}
-        AND (visibility='shared' OR created_by=$2) GROUP BY transaction_date ORDER BY transaction_date`,[couple.id,user.id,monthStart])
+        AND (visibility='shared' OR created_by=$2) GROUP BY transaction_date ORDER BY transaction_date`,[couple.id,user.id,monthStart]),
+      pool.query(`SELECT category,COALESCE(SUM(ABS(amount)),0) AS expenses FROM transactions
+        WHERE couple_id=$1 AND deleted_at IS NULL AND ${range} AND direction='expense'
+        AND (visibility='shared' OR created_by=$2) GROUP BY category`,[couple.id,user.id,monthStart])
     ]);
-    return sendJson(res, 200, { user, profile:user, couple, month:requestedMonth||null, totals:totals.rows[0], transactions:tx.rows, goals:goals.rows, budgets:budgets.rows, daily:daily.rows });
+    return sendJson(res, 200, { user, profile:user, couple, month:requestedMonth||null, totals:totals.rows[0], transactions:tx.rows, transactionLimit:80, categories:categories.rows, goals:goals.rows, budgets:budgets.rows, daily:daily.rows });
   }
   if (route === 'POST /api/transactions') {
     const body = await readJson(req);
@@ -406,7 +426,8 @@ async function api(req, res, url) {
     const description = safeText(body.description,120);
     const category = safeText(body.category,50) || 'Outros';
     if (!Number.isFinite(amount) || amount <= 0 || amount > 10_000_000 || description.length < 2) throw fail(400, 'Informe descrição e valor válidos.');
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : new Date().toISOString().slice(0,10);
+    const date = body.date || new Date().toISOString().slice(0,10);
+    if (!validDate(date)) throw fail(400, 'Informe uma data válida.');
     const visibility = getRequestScope(body,user);
     const signed = direction === 'income' ? amount : -amount;
     const { rows } = await pool.query(`INSERT INTO transactions (couple_id,created_by,paid_by,amount,direction,category,description,visibility,transaction_date)
@@ -422,7 +443,7 @@ async function api(req, res, url) {
     const description = safeText(body.description,120);
     const category = safeText(body.category,50) || 'Outros';
     if (!direction || !Number.isFinite(amount) || amount <= 0 || amount > 10_000_000 || description.length < 2) throw fail(400,'Informe descrição, tipo e valor válidos.');
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : null;
+    const date = validDate(body.date) ? body.date : null;
     if (!date) throw fail(400,'Informe uma data válida.');
     const visibility = getRequestScope(body,user);
     const signed = direction === 'income' ? amount : -amount;
@@ -445,8 +466,9 @@ async function api(req, res, url) {
       if (rows[0].count >= 1) throw fail(403,'O plano grátis permite uma meta ativa. O Premium libera metas ilimitadas.','premium_required');
     }
     const body=await readJson(req), title=safeText(body.title,100), target=Number(body.targetAmount);
-    if(title.length<2||!Number.isFinite(target)||target<=0) throw fail(400,'Informe o nome da meta e um valor válido.');
-    const deadline=/^\d{4}-\d{2}-\d{2}$/.test(body.deadline||'')?body.deadline:null;
+    if(title.length<2||!Number.isFinite(target)||target<=0||target>10_000_000) throw fail(400,'Informe o nome da meta e um valor válido.');
+    if(body.deadline&&!validDate(body.deadline)) throw fail(400,'Informe uma data válida para a meta.');
+    const deadline=body.deadline||null;
     const {rows}=await pool.query(`INSERT INTO goals (couple_id,created_by,title,target_amount,deadline_date) VALUES($1,$2,$3,$4,$5)
       RETURNING id,title,target_amount::float,current_amount::float,deadline_date,status`,[couple.id,user.id,title,target,deadline]);
     return sendJson(res,201,{goal:rows[0]});
@@ -454,8 +476,9 @@ async function api(req, res, url) {
   const editGoal = url.pathname.match(/^\/api\/goals\/([0-9a-f-]+)$/i);
   if (req.method === 'PUT' && editGoal) {
     const body=await readJson(req),title=safeText(body.title,100),target=Number(body.targetAmount);
-    if(title.length<2||!Number.isFinite(target)||target<=0) throw fail(400,'Informe o nome da meta e um valor válido.');
-    const deadline=/^\d{4}-\d{2}-\d{2}$/.test(body.deadline||'')?body.deadline:null;
+    if(title.length<2||!Number.isFinite(target)||target<=0||target>10_000_000) throw fail(400,'Informe o nome da meta e um valor válido.');
+    if(body.deadline&&!validDate(body.deadline)) throw fail(400,'Informe uma data válida para a meta.');
+    const deadline=body.deadline||null;
     const {rows}=await pool.query(`UPDATE goals SET title=$3,target_amount=$4,deadline_date=$5,
       status=CASE WHEN current_amount >= $4 THEN 'completed' ELSE 'active' END
       WHERE id=$1 AND couple_id=$2 AND status IN ('active','completed')
@@ -472,17 +495,17 @@ async function api(req, res, url) {
   const contribution=url.pathname.match(/^\/api\/goals\/([0-9a-f-]+)\/contributions$/i);
   if(req.method==='POST'&&contribution){
     const body=await readJson(req),amount=Number(body.amount);
-    if(!Number.isFinite(amount)||amount<=0) throw fail(400,'Informe um valor válido.');
+    if(!Number.isFinite(amount)||amount<=0||amount>10_000_000) throw fail(400,'Informe um valor válido.');
     const {rows}=await pool.query(`UPDATE goals SET current_amount=current_amount+$3,
       status=CASE WHEN current_amount+$3>=target_amount THEN 'completed' ELSE 'active' END
-      WHERE id=$1 AND couple_id=$2 RETURNING id,title,target_amount::float,current_amount::float,deadline_date,status`,[contribution[1],couple.id,amount]);
+      WHERE id=$1 AND couple_id=$2 AND status='active' AND current_amount+$3<=9999999999.99 RETURNING id,title,target_amount::float,current_amount::float,deadline_date,status`,[contribution[1],couple.id,amount]);
     if(!rows[0]) throw fail(404,'Meta não encontrada.');
     return sendJson(res,200,{goal:rows[0]});
   }
   if (route === 'POST /api/budgets') {
     if(couple.plan!=='premium') throw fail(403,'Orçamentos por categoria e alertas avançados fazem parte do Premium.','premium_required');
     const body=await readJson(req),category=safeText(body.category,50),limit=Number(body.monthlyLimit);
-    if(!category||!Number.isFinite(limit)||limit<=0) throw fail(400,'Informe categoria e limite válidos.');
+    if(!category||!Number.isFinite(limit)||limit<=0||limit>10_000_000) throw fail(400,'Informe categoria e limite válidos.');
     const {rows}=await pool.query(`INSERT INTO budgets (couple_id,category,monthly_limit,period_start)
       VALUES ($1,$2,$3,date_trunc('month',CURRENT_DATE)::date)
       ON CONFLICT(couple_id,category,period_start) DO UPDATE SET monthly_limit=EXCLUDED.monthly_limit
@@ -493,7 +516,7 @@ async function api(req, res, url) {
   if(req.method==='PUT'&&budgetById){
     if(couple.plan!=='premium') throw fail(403,'Orçamentos por categoria e alertas avançados fazem parte do Premium.','premium_required');
     const body=await readJson(req),category=safeText(body.category,50),limit=Number(body.monthlyLimit);
-    if(!category||!Number.isFinite(limit)||limit<=0) throw fail(400,'Informe categoria e limite válidos.');
+    if(!category||!Number.isFinite(limit)||limit<=0||limit>10_000_000) throw fail(400,'Informe categoria e limite válidos.');
     const duplicate=await pool.query(`SELECT 1 FROM budgets b2 WHERE b2.couple_id=$1 AND b2.category=$2
       AND b2.period_start=(SELECT period_start FROM budgets WHERE id=$3 AND couple_id=$1) AND b2.id<>$3 LIMIT 1`,[couple.id,category,budgetById[1]]);
     if(duplicate.rowCount) throw fail(409,'Já existe um limite para essa categoria neste mês.');
@@ -522,11 +545,15 @@ async function api(req, res, url) {
       const {rows:invites}=await client.query(`SELECT id,couple_id FROM couple_invitations WHERE code_hash=$1 AND accepted_at IS NULL AND expires_at>NOW() FOR UPDATE`,[sha256(code)]);
       if(!invites[0]) throw fail(404,'Este convite expirou ou já foi usado.');
       const target=invites[0].couple_id;
+      await client.query('SELECT id FROM couples WHERE id=$1 FOR UPDATE',[target]);
+      if(target===couple.id) throw fail(409,'Você já participa deste espaço.');
       const {rows:count}=await client.query('SELECT COUNT(*)::int AS total FROM couple_members WHERE couple_id=$1',[target]);
       if(count[0].total>=2) throw fail(409,'Este espaço já tem duas pessoas.');
       const {rows:memberships}=await client.query('SELECT couple_id FROM couple_members WHERE user_id=$1 FOR UPDATE',[user.id]);
       if(memberships[0]&&memberships[0].couple_id!==target){
         const old=memberships[0].couple_id;
+        const oldMembers=await client.query('SELECT user_id FROM couple_members WHERE couple_id=$1 FOR UPDATE',[old]);
+        if(oldMembers.rowCount>1) throw fail(409,'Seu espaço já está compartilhado. Não é possível substituí-lo por um convite.');
         const {rows:activity}=await client.query(`SELECT
           (SELECT COUNT(*)::int FROM transactions WHERE couple_id=$1 AND deleted_at IS NULL)+
           (SELECT COUNT(*)::int FROM goals WHERE couple_id=$1) AS total`,[old]);
@@ -544,6 +571,7 @@ async function api(req, res, url) {
     } finally { client.release(); }
   }
   if (route === 'POST /api/whatsapp/link') {
+    if (!whatsappConfigured) throw fail(503, 'O WhatsApp ainda não está disponível. Use os lançamentos manuais por enquanto.', 'whatsapp_not_configured');
     const code=randomBytes(4).toString('hex').toUpperCase();
     await pool.query('INSERT INTO whatsapp_link_codes (code_hash,user_id,expires_at) VALUES ($1,$2,NOW()+INTERVAL \'10 minutes\')',[sha256(code),user.id]);
     const businessNumber=(process.env.WHATSAPP_BUSINESS_NUMBER||'').replace(/\D/g,'');
@@ -568,6 +596,8 @@ const mimeTypes = { '.html':'text/html; charset=utf-8','.svg':'image/svg+xml','.
 async function serveStatic(req,res,url) {
   let pathname=decodeURIComponent(url.pathname);
   if(pathname==='/'||pathname==='/index.html') pathname='/index.html';
+  // Only presentation files are public. Never expose .env, source, database or Git files.
+  if (pathname !== '/index.html' && !/^\/assets\/[a-zA-Z0-9_-]+\.(svg|png|jpe?g|webp|ico|css|js)$/.test(pathname)) return sendJson(res,404,{error:'Arquivo não encontrado.'});
   const file=path.resolve(ROOT,`.${pathname}`);
   if(!file.startsWith(ROOT+path.sep)) return sendJson(res,403,{error:'Acesso negado.'});
   try {
@@ -575,13 +605,13 @@ async function serveStatic(req,res,url) {
     if(!stat.isFile()) return sendJson(res,404,{error:'Arquivo não encontrado.'});
     const content=await fs.readFile(file);
     res.writeHead(200,{'content-type':mimeTypes[path.extname(file)]||'application/octet-stream','content-length':content.length,'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin','x-frame-options':'DENY','cache-control':path.extname(file)==='.html'?'no-store':'public, max-age=3600'});
-    res.end(content);
+    res.end(req.method === 'HEAD' ? undefined : content);
   } catch { return sendJson(res,404,{error:'Arquivo não encontrado.'}); }
 }
 
 const server=http.createServer(async(req,res)=>{
-  const url=new URL(req.url||'/',ORIGIN);
   try {
+    const url=new URL(req.url||'/',ORIGIN);
     if(url.pathname.startsWith('/api/')) {
       const handled=await api(req,res,url);
       if(handled!==false) return;
@@ -591,7 +621,7 @@ const server=http.createServer(async(req,res)=>{
   } catch(error) {
     const status=error.status||500;
     if(status>=500) console.error('Erro da aplicação:',error);
-    if(!res.headersSent) sendJson(res,status,{error:status>=500?'Ocorreu um erro. Tente novamente.':error.message,code:error.code});
+    if(!res.headersSent) sendJson(res,status,{error:status>=500&&status!==503?'Ocorreu um erro. Tente novamente.':error.message,code:error.code});
     else res.end();
   }
 });
@@ -599,6 +629,7 @@ const server=http.createServer(async(req,res)=>{
 if(pool) {
   try {
     await pool.query(await fs.readFile(path.join(ROOT,'schema.sql'),'utf8'));
+    databaseReady = true;
     console.log('Banco PostgreSQL conectado e estrutura verificada.');
   } catch(error) {
     console.error('Não foi possível inicializar o PostgreSQL:',error.message);
