@@ -15,6 +15,12 @@ Aplicação web para organizar finanças em casal. Cada pessoa entra com Google,
 | Consultar rotas e estrutura técnica | [Referência técnica](docs/REFERENCIA.md) |
 | Resolver problemas comuns | [Solução de problemas](docs/PROBLEMAS.md) |
 
+## Teste automatizado
+
+Para conferir a apresentação pública sem configurar Google ou banco de dados, execute `npm ci` e depois `npm test`. A suíte inicia o servidor em uma porta local temporária e verifica que a página e uma imagem carregam, que o modo demonstração informa as integrações desativadas e que arquivos internos e rotas de sessão permanecem protegidos. Ela também confere a rejeição de uma origem externa no logout.
+
+Esse teste cobre apenas o modo de demonstração. Fluxos com login, lançamentos e metas exigem um ambiente de testes com banco e conta Google próprios; eles não são marcados como testados por esta suíte.
+
 ## O que funciona hoje
 
 - Apresentação do produto e demonstração visual sem cadastro; os números da demonstração são fictícios.
