@@ -1,113 +1,48 @@
-# Entre Nós
+# Entre Nós — Finanças a Dois
 
-Aplicação local para finanças de casal, com página de apresentação, cadastro Google, perfil inicial, lançamentos, metas e integração preparada para a WhatsApp Business Cloud API.
+Aplicação web para organizar finanças em casal. Cada pessoa entra com Google, registra movimentações compartilhadas ou pessoais, acompanha o resumo mensal e contribui para metas. O projeto inclui uma apresentação pública e uma demonstração com dados fictícios.
 
-## Estado desta versão
+> **Estado do projeto:** versão de desenvolvimento. O código está no GitHub; a publicação do aplicativo, a cobrança Premium, o Open Finance e o WhatsApp real dependem das etapas descritas em [Preparar o lançamento](docs/LANCAMENTO.md). O preço mostrado na interface é uma proposta, não uma cobrança ativa.
 
-Projeto em desenvolvimento. O repositório público contém o código; não há hospedagem pública ativada.
+## Comece aqui
 
-- Banco local: disponível com `npm run dev:local` ou `INICIAR.cmd` no Windows.
-- Login Google: a validação no servidor está implementada; requer um Client ID Web real da sua conta Google Cloud.
-- WhatsApp: requer as credenciais e o número empresarial da Meta, além de um servidor HTTPS para receber mensagens. O aplicativo não gera códigos de vínculo enquanto essa configuração estiver ausente.
-- E-mail, cobrança Premium e Open Finance: ainda não disponíveis. Não há autenticação por e-mail nem cobrança ativa nesta versão.
+| Preciso de... | Leia |
+| --- | --- |
+| Instalar e iniciar no Windows | [Instalação local](docs/INSTALACAO.md) |
+| Entender as telas e os planos | [Guia de uso](docs/USO.md) |
+| Configurar Google, banco e WhatsApp | [Integrações](docs/INTEGRACOES.md) |
+| Publicar sem deixar o computador ligado | [Preparar o lançamento](docs/LANCAMENTO.md) |
+| Consultar rotas e estrutura técnica | [Referência técnica](docs/REFERENCIA.md) |
+| Resolver problemas comuns | [Solução de problemas](docs/PROBLEMAS.md) |
 
-Abra **http://localhost:3000** para usar o servidor e o banco. Abrir `index.html` diretamente permite apenas visualizar a apresentação e demonstração.
+## O que funciona hoje
 
-## Iniciar localmente
+- Apresentação do produto e demonstração visual sem cadastro; os números da demonstração são fictícios.
+- Login com Google Identity Services, validação do token no servidor e sessão por cookie `HttpOnly`, quando `GOOGLE_CLIENT_ID` e PostgreSQL estão configurados.
+- Ficha inicial e edição do perfil; renda opcional e escolha do escopo padrão dos lançamentos.
+- Convite privado para conectar duas pessoas ao mesmo espaço.
+- Entradas e despesas manuais, com escopo compartilhado ou pessoal; edição e exclusão dos próprios registros.
+- Resumo mensal, evolução diária e totais por categoria. A lista da API mostra até 80 lançamentos por mês; os totais consideram todos os registros visíveis à pessoa.
+- Metas compartilhadas, edição, contribuição e arquivamento. O plano gratuito permite uma meta ativa.
+- API e tela para orçamentos por categoria, disponíveis somente quando o espaço tem plano `premium`; não há fluxo de pagamento ou ativação comercial do Premium.
+- Código do webhook WhatsApp, vínculo de número e comandos de texto. Só ficam utilizáveis após configurar a conta Meta, credenciais, número empresarial e HTTPS.
 
-Requisitos: Node.js 22 ou mais recente. Para usar o PostgreSQL local completo, instale Docker Desktop ou forneça outro PostgreSQL acessível.
+## O que ainda não está disponível
 
-1. Abra esta pasta no terminal e instale as dependências:
+- Login por e-mail.
+- Cobrança e contratação do Premium.
+- Conexão bancária por Open Finance.
+- WhatsApp sem configurar a plataforma empresarial da Meta.
+- Notificações externas automáticas; a preferência do perfil é armazenada, mas não há serviço de envio.
 
-   ```powershell
-   npm install
-   ```
+## Visão técnica
 
-2. Inicie o PostgreSQL local:
+O navegador usa `index.html` e os arquivos em `assets/`. `server.mjs` serve a página, valida o login e expõe a API. Os dados ficam em PostgreSQL, com tabelas definidas em `schema.sql`. O modo local sem Docker usa PGlite em `data/entre-nos`; esse diretório não é enviado ao GitHub. O arquivo `render.yaml` descreve uma opção de hospedagem, mas não publica nada sozinho.
 
-   ```powershell
-   docker compose up -d db
-   ```
+**Requisitos locais:** Node.js compatível com o projeto (recomendado: 22 ou superior), npm e acesso à internet para o login Google. Para começar sem Docker, execute `INICIAR.cmd` no Windows ou `npm run dev:local` no terminal, depois abra **http://localhost:3000**. Confira o preparo do `.env` em [Instalação local](docs/INSTALACAO.md).
 
-3. Crie seu arquivo de configuração e preencha os dados:
+## Segurança e privacidade
 
-   ```powershell
-   Copy-Item .env.example .env
-   ```
+O servidor só entrega `index.html` e arquivos permitidos em `assets/`; não publica `.env`, banco local ou código de servidor. As variáveis sensíveis pertencem ao ambiente do servidor, nunca ao HTML ou ao repositório. Despesas pessoais só aparecem para quem as criou; despesas compartilhadas aparecem para os membros do espaço. O cadastro não solicita senha bancária.
 
-4. Inicie o site:
-
-   ```powershell
-   npm start
-   ```
-
-5. Abra `http://localhost:3000`.
-
-Na primeira inicialização, o servidor aplica `schema.sql` e cria as tabelas do produto. `GET /api/health` indica se o PostgreSQL está conectado.
-
-## Preparar o lançamento online
-
-O arquivo `render.yaml` deixa o serviço web e o PostgreSQL prontos para uma implantação no Render. O plano gratuito serve para testes e protótipos; o serviço pode ficar suspenso após períodos sem acesso e os limites da plataforma se aplicam.
-
-1. Crie uma conta no Render e escolha **New → Blueprint**.
-2. Conecte o repositório público `YannSantana/financas-a-dois` e selecione `render.yaml`.
-3. Preencha as variáveis marcadas como secretas: `PUBLIC_APP_ORIGIN` (a URL HTTPS do serviço), `GOOGLE_CLIENT_ID` e, quando for ativar o WhatsApp, as seis variáveis `WHATSAPP_*`.
-4. No Google Cloud, adicione a URL HTTPS do serviço em **Origens JavaScript autorizadas** e inclua também a origem no Client ID Web.
-5. Depois do primeiro deploy, confirme `https://seu-dominio/api/health` antes de abrir o site.
-
-O `DATABASE_URL` é criado automaticamente pelo Blueprint e os segredos não entram no GitHub. O seu computador não precisa ficar ligado depois que o serviço estiver implantado.
-
-### Atalho local sem Docker
-
-As dependências do projeto incluem PGlite Socket, que mantém um banco PostgreSQL compatível em `data/entre-nos`. Para iniciar o banco e o site juntos, rode `npm run dev:local` e abra `http://localhost:3000`. O banco persiste nesse diretório entre inicializações. Esse modo é para desenvolvimento local; para produção, use um serviço PostgreSQL convencional e `npm start`.
-
-## Entrar com Google
-
-Crie um OAuth Client ID do tipo Web no Google Cloud Console. Adicione `http://localhost:3000` como origem JavaScript autorizada e, quando publicar o site, adicione também o domínio HTTPS de produção. Copie o Client ID para `GOOGLE_CLIENT_ID` no `.env` e reinicie o servidor.
-
-Configure a tela de consentimento no Google Auth Platform usando as informações reais do responsável pelo aplicativo. Para desenvolvimento, autorize `http://localhost` e `http://localhost:3000`; se usar `127.0.0.1`, cadastre essa origem também. O ID deve terminar em `.apps.googleusercontent.com`. Este fluxo usa somente o Client ID e não precisa de Client Secret no navegador. Consulte a [configuração oficial do Google](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
-
-`/api/config` informa a disponibilidade real do banco e das integrações, sem expor segredos. `/api/health` retorna 200 com o banco conectado e 503 quando indisponível. Um botão de login só é montado quando o banco está acessível, o Client ID está configurado e a biblioteca Google carrega.
-
-### Correções de 5 de outubro de 2026
-
-O servidor entrega somente a página e os arquivos públicos de `assets`; arquivos `.env`, banco, código do servidor e metadados Git ficam bloqueados. Datas inexistentes são rejeitadas. Metas arquivadas ou concluídas não recebem contribuições. Os totais por categoria incluem todos os lançamentos do mês, mesmo quando a lista exibe os 80 mais recentes. Sair da conta limpa a tela e revoga a sessão no servidor. O convite para outro espaço não pode apagar um espaço já compartilhado.
-
-O navegador envia o token de identidade Google ao servidor. O servidor valida emissor, público e validade do token com a biblioteca oficial `google-auth-library`, cria/atualiza o perfil e inicia uma sessão em cookie `HttpOnly`. Nenhum token de sessão é guardado no navegador.
-
-## Cadastro e perfil
-
-Depois da primeira entrada Google, a pessoa responde a uma ficha breve com contexto do relacionamento, organização das despesas, prioridades, objetivo financeiro e preferências de notificações. A faixa de renda é opcional e não é compartilhada com o par por padrão. O perfil e as escolhas de privacidade ficam no PostgreSQL.
-
-Os lançamentos manuais e as metas também são persistidos. No painel, é possível editar ou arquivar metas, alterar os próprios lançamentos e ajustar ou remover limites mensais. Metas concluídas continuam visíveis no histórico do painel. O plano grátis permite até uma meta ativa. Limites por categoria ficam protegidos por plano Premium na API. A cobrança ainda não está conectada.
-
-## WhatsApp
-
-Esta versão implementa o recebimento e o processamento de mensagens por webhook. Para ativar o número real, configure um app Meta/WhatsApp Business e preencha no `.env`:
-
-- `WHATSAPP_VERIFY_TOKEN`: segredo escolhido por você e cadastrado também nas configurações do webhook Meta.
-- `WHATSAPP_APP_SECRET`: segredo do app Meta, usado para conferir `X-Hub-Signature-256` sobre o corpo original do webhook.
-- `WHATSAPP_ACCESS_TOKEN`: token de acesso da WhatsApp Business Cloud API.
-- `WHATSAPP_PHONE_NUMBER_ID`: identificador do número de negócio no Meta.
-- `WHATSAPP_BUSINESS_NUMBER`: número público em formato internacional, com código do país.
-- `WHATSAPP_GRAPH_API_VERSION`: versão Graph API ativa no seu app Meta.
-
-Cadastre como callback a URL pública HTTPS `https://seu-dominio/api/webhooks/whatsapp` e assine o evento `messages`. O callback GET valida o token e devolve o desafio da Meta; o POST confere a assinatura antes de ler os dados. O endpoint precisa estar publicado em HTTPS para receber mensagens da Meta.
-
-Na área do casal, escolha **Vincular número** e envie a mensagem `VINCULAR CODIGO` ao número empresarial. O código vence em 10 minutos. Depois do vínculo, são aceitos exemplos como:
-
-- `gastei 48,90 no mercado`
-- `paguei R$ 32,50 na farmácia /pessoal`
-- `RELATÓRIO` para o resumo do mês
-- `METAS` para ver o progresso
-- `DESFAZER` para remover o último lançamento feito pelo WhatsApp
-
-O escopo padrão (compartilhado ou pessoal) vem da ficha de perfil; `/pessoal` e `/casal` podem sobrescrevê-lo por mensagem. Cada evento tem um ID único para impedir gravações duplicadas quando a Meta repetir um webhook. O parser atual entende texto em português e categorias comuns; áudios, anexos e frases ambíguas pedem uma versão futura.
-
-## Integrações ainda necessárias
-
-O banco PostgreSQL, a validação de login Google e os endpoints de gravação estão implementados. Login e gravação ficam indisponíveis até configurar as variáveis correspondentes e executar o servidor.
-
-Para produção, ainda é preciso hospedar em HTTPS, criar o projeto OAuth e o app WhatsApp Business, guardar os segredos no ambiente do servidor e configurar um agregador Open Finance. A tabela de contas bancárias já existe, mas a conexão com instituições financeiras não está habilitada. Pagamentos do plano Premium também aguardam um gateway.
-
-Nunca coloque `WHATSAPP_APP_SECRET`, `WHATSAPP_ACCESS_TOKEN` ou credenciais do banco no HTML. Esses valores ficam somente no `.env` do servidor.
+Antes de receber pessoas reais, revise acesso, política de privacidade, backups, retenção de dados, observabilidade e as integrações externas em [Preparar o lançamento](docs/LANCAMENTO.md). Não use a demonstração como prova de dados persistidos.
